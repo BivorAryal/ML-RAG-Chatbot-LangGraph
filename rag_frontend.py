@@ -1,351 +1,379 @@
 """
 ============================================================
-  ML & Deep Learning RAG Chatbot — Streamlit Frontend
+  ML & Deep Learning RAG Chatbot Backend
+  Built with: LangChain | LangGraph | FAISS | Groq
+============================================================
   Author: Bivor
+  Stack : LangChain + LangGraph + FAISS + Groq LLaMA3
 ============================================================
 """
 
-import streamlit as st
+# ── 0. Imports ────────────────────────────────────────────
+import os
+import logging
 from pathlib import Path
+from typing import Annotated, TypedDict, List
+from datetime import datetime
+from dotenv import load_dotenv
 
-# ── Page Config ───────────────────────────────────────────
-st.set_page_config(
-    page_title="ML Guru – RAG Chatbot",
-    page_icon="🧠",
-    layout="wide",
-    initial_sidebar_state="expanded",
+# LangChain – Document loaders
+from langchain_community.document_loaders import (
+    DirectoryLoader,
+    PyPDFLoader,
+    TextLoader,
 )
+# LangChain – Splitters & Embeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
 
-# ── CSS ───────────────────────────────────────────────────
-st.markdown("""
-<style>
-  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+# LangChain – Core
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.output_parsers import StrOutputParser
 
-  :root {
-    --bg-deep:        #0a0e1a;
-    --bg-card:        #111827;
-    --bg-input:       #1a2235;
-    --accent-cyan:    #00d4ff;
-    --accent-blue:    #3b82f6;
-    --accent-lime:    #a3e635;
-    --text-primary:   #f1f5f9;
-    --text-secondary: #94a3b8;
-    --border:         rgba(255,255,255,0.08);
-    --user-bg:        linear-gradient(135deg, #1e3a5f 0%, #1a2d4a 100%);
-    --ai-bg:          linear-gradient(135deg, #0f2a1e 0%, #0d1f17 100%);
-    --radius:         14px;
-  }
+# LangChain – LLM (Groq)
+from langchain_groq import ChatGroq
 
-  .stApp { background: var(--bg-deep); font-family: 'Space Grotesk', sans-serif; }
-  * { box-sizing: border-box; }
-  p, li, span { color: var(--text-primary); }
+# LangGraph
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
+from langgraph.checkpoint.memory import InMemorySaver
 
-  [data-testid="stSidebar"] {
-    background: var(--bg-card) !important;
-    border-right: 1px solid var(--border);
-  }
-  [data-testid="stSidebar"] * { color: var(--text-primary) !important; }
+load_dotenv()
 
-  .header-banner {
-    background: linear-gradient(135deg, #0a1628 0%, #0d2137 50%, #0a1628 100%);
-    border: 1px solid rgba(0,212,255,0.2);
-    border-radius: var(--radius);
-    padding: 28px 36px; margin-bottom: 24px;
-    position: relative; overflow: hidden;
-  }
-  .header-banner::before {
-    content: ''; position: absolute; top: -50%; left: -50%;
-    width: 200%; height: 200%;
-    background: radial-gradient(circle at 30% 40%, rgba(0,212,255,0.06) 0%, transparent 60%);
-    pointer-events: none;
-  }
-  .header-banner h1 {
-    font-size: 2rem; font-weight: 700;
-    background: linear-gradient(90deg, #00d4ff, #3b82f6, #a3e635);
-    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-    margin: 0 0 6px 0;
-  }
-  .header-banner p { color: var(--text-secondary); margin: 0; font-size: 0.95rem; }
-
-  .msg-user, .msg-ai {
-    border-radius: var(--radius); padding: 18px 22px;
-    border: 1px solid var(--border); margin-bottom: 14px;
-    animation: fadeUp 0.3s ease;
-  }
-  @keyframes fadeUp {
-    from { opacity: 0; transform: translateY(8px); }
-    to   { opacity: 1; transform: translateY(0); }
-  }
-  .msg-user { background: var(--user-bg); border-color: rgba(59,130,246,0.25); }
-  .msg-ai   { background: var(--ai-bg);   border-color: rgba(0,212,255,0.2); }
-
-  .msg-label {
-    font-size: 0.72rem; font-weight: 600; letter-spacing: 0.1em;
-    text-transform: uppercase; margin-bottom: 8px;
-    font-family: 'JetBrains Mono', monospace;
-  }
-  .msg-user .msg-label { color: #60a5fa; }
-  .msg-ai   .msg-label { color: #00d4ff; }
-  .msg-content { font-size: 0.96rem; line-height: 1.7; color: var(--text-primary); white-space: pre-wrap; }
-
-  .sources-row { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 7px; align-items: center; }
-  .source-label { font-size: 0.72rem; color: var(--text-secondary); font-weight: 500; margin-right: 4px; }
-  .source-pill {
-    background: rgba(0,212,255,0.08); border: 1px solid rgba(0,212,255,0.25);
-    color: #00d4ff; border-radius: 20px; padding: 3px 11px; font-size: 0.74rem;
-    font-family: 'JetBrains Mono', monospace;
-  }
-
-  .thinking {
-    display: flex; align-items: center; gap: 12px;
-    background: var(--ai-bg); border: 1px solid rgba(0,212,255,0.2);
-    border-radius: var(--radius); padding: 16px 22px; margin-bottom: 14px;
-  }
-  .thinking-dots span {
-    display: inline-block; width: 8px; height: 8px;
-    background: var(--accent-cyan); border-radius: 50%;
-    animation: bounce 1.2s infinite;
-  }
-  .thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
-  .thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
-  @keyframes bounce {
-    0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
-    40%            { transform: scale(1.0); opacity: 1.0; }
-  }
-  .thinking-text { color: var(--text-secondary); font-size: 0.9rem; font-style: italic; }
-
-  .stat-card {
-    background: rgba(255,255,255,0.04); border: 1px solid var(--border);
-    border-radius: 10px; padding: 14px 16px; margin-bottom: 10px; text-align: center;
-  }
-  .stat-num { font-size: 1.8rem; font-weight: 700; color: var(--accent-cyan); font-family: 'JetBrains Mono', monospace; }
-  .stat-lbl { font-size: 0.78rem; color: var(--text-secondary); margin-top: 2px; }
-
-  .loading-status {
-    background: var(--bg-card); border: 1px solid rgba(0,212,255,0.2);
-    border-radius: var(--radius); padding: 30px; text-align: center; margin: 40px auto;
-    max-width: 500px;
-  }
-  .loading-status h3 { color: var(--accent-cyan); margin-bottom: 8px; }
-  .loading-status p  { color: var(--text-secondary); font-size: 0.9rem; margin: 4px 0; }
-
-  .stButton > button {
-    background: linear-gradient(135deg, #1d4ed8, #1e3a8a) !important;
-    color: #fff !important; border: none !important;
-    border-radius: 10px !important; font-weight: 600 !important;
-    font-family: 'Space Grotesk', sans-serif !important;
-    transition: all 0.2s ease !important; text-align: left !important;
-  }
-  .stButton > button:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 4px 20px rgba(59,130,246,0.4) !important;
-    background: linear-gradient(135deg, #2563eb, #1d4ed8) !important;
-  }
-
-  hr { border-color: var(--border) !important; }
-  #MainMenu, footer, header { visibility: hidden; }
-</style>
-""", unsafe_allow_html=True)
-
-# ── Load Chatbot — cached so it only runs ONCE ────────────
-# @st.cache_resource ensures this function is called only once
-# across all browser sessions. Subsequent loads are instant.
-@st.cache_resource(show_spinner=False)
-def load_chatbot():
-    """
-    Loads the full RAG pipeline once and caches it.
-    - First run : downloads embeddings + builds FAISS index (~1-3 min)
-    - All later runs: loads FAISS from disk (~3-5 seconds)
-    """
-    from rag_backend import MLRagChatbot
-    return MLRagChatbot(force_rebuild=False)
-
-# ── Boot Sequence ─────────────────────────────────────────
-# Show a friendly loading screen instead of a blocking spinner
-if "chatbot" not in st.session_state:
-    # Display loading UI immediately while cache_resource runs
-    load_placeholder = st.empty()
-
-    with load_placeholder.container():
-        st.markdown("""
-        <div class='loading-status'>
-          <div style='font-size:3rem;margin-bottom:12px;'>🧠</div>
-          <h3>ML Guru is starting up…</h3>
-          <p>Loading embedding model &amp; FAISS index.</p>
-          <p style='color:#475569;font-size:0.82rem;margin-top:12px;'>
-            ⏱️ First run: ~1–3 min (downloads model + builds index)<br>
-            ⚡ After that: always loads in under 5 seconds
-          </p>
-        </div>
-        """, unsafe_allow_html=True)
-
-    # This is the actual blocking call — runs in background via cache
-    chatbot = load_chatbot()
-
-    # Store in session state once ready
-    st.session_state.chatbot        = chatbot
-    st.session_state.thread_id      = chatbot.new_thread_id()
-    st.session_state.messages       = []
-    st.session_state.total_questions = 0
-    st.session_state.sources_seen   = set()
-    st.session_state.quick_input    = ""
-
-    load_placeholder.empty()  # Clear loading screen
-    st.rerun()                # Rerun to show the actual chat UI
-
-# ── Ensure session state keys exist ──────────────────────
-for key, default in [
-    ("messages",        []),
-    ("total_questions", 0),
-    ("sources_seen",    set()),
-    ("quick_input",     ""),
-]:
-    if key not in st.session_state:
-        st.session_state[key] = default
-
-# ── Sidebar ───────────────────────────────────────────────
-with st.sidebar:
-    st.markdown("## 🧠 ML Guru")
-    st.markdown(
-        "<p style='color:#94a3b8;font-size:0.85rem;line-height:1.6;'>"
-        "Your personal ML &amp; Deep Learning RAG assistant — "
-        "answers come from <strong>your own study materials</strong>.</p>",
-        unsafe_allow_html=True,
+# ── Logging Setup ─────────────────────────────────────────
+def setup_logger(name: str, log_file: str = "rag_chatbot.log"):
+    """Setup logger with both file and console handlers."""
+    logger = logging.getLogger(name)
+    logger.setLevel(logging.INFO)
+    
+    # Create formatters
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
     )
-    st.divider()
+    
+    # File handler
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    
+    return logger
 
-    st.markdown("### 📊 Session Stats")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown(
-            f"<div class='stat-card'><div class='stat-num'>{st.session_state.total_questions}</div>"
-            f"<div class='stat-lbl'>Questions</div></div>", unsafe_allow_html=True)
-    with c2:
-        st.markdown(
-            f"<div class='stat-card'><div class='stat-num'>{len(st.session_state.sources_seen)}</div>"
-            f"<div class='stat-lbl'>Sources Used</div></div>", unsafe_allow_html=True)
+# Initialize logger
+logger = setup_logger("RAG_Chatbot")
 
-    st.divider()
-    st.markdown("### ⚡ Quick Topics")
+# ── 1. Constants & Paths ──────────────────────────────────
+FAISS_INDEX_PATH = "ml_rag_faiss_index"
+GROQ_API_KEY     = os.getenv("GROQ_API_KEY")
 
-    quick_topics = [
-        "What is RAG and how does it work?",
-        "Explain supervised vs unsupervised learning",
-        "How does LangGraph differ from LangChain?",
-        "What are the 4 steps to build a RAG system?",
-        "What is fine-tuning and when should I use it?",
-        "Explain FAISS vs Pinecone for vector stores",
-        "What are the types of neural network architectures?",
-        "How does MMR retrieval improve RAG quality?",
-        "What is in-context learning?",
-        "Explain the difference between RAG and fine-tuning",
-    ]
-    for topic in quick_topics:
-        label = f"→ {topic[:44]}…" if len(topic) > 44 else f"→ {topic}"
-        if st.button(label, key=f"qt_{topic[:20]}", use_container_width=True):
-            st.session_state.quick_input = topic
-            st.rerun()
+if not GROQ_API_KEY:
+    logger.error("GROQ_API_KEY not found in environment variables!")
+    raise ValueError("GROQ_API_KEY is required. Please check your .env file.")
 
-    st.divider()
-    st.markdown("### ⚙️ Controls")
-    if st.button("🗑️  Clear Chat History", use_container_width=True):
-        st.session_state.messages        = []
-        st.session_state.total_questions = 0
-        st.session_state.sources_seen    = set()
-        st.session_state.thread_id       = st.session_state.chatbot.new_thread_id()
-        st.rerun()
+logger.info("=" * 60)
+logger.info("ML RAG Chatbot Backend Initializing")
+logger.info(f"FAISS Index Path: {FAISS_INDEX_PATH}")
+logger.info(f"Python Version: {os.sys.version}")
+logger.info("=" * 60)
 
-    if st.button("🔄  Rebuild FAISS Index", use_container_width=True):
-        st.cache_resource.clear()
-        from rag_backend import MLRagChatbot
-        with st.spinner("Rebuilding index from your ML files…"):
-            st.session_state.chatbot   = MLRagChatbot(force_rebuild=True)
-            st.session_state.thread_id = st.session_state.chatbot.new_thread_id()
-        st.success("✅ Index rebuilt!")
-        st.rerun()
+# Cache the embedding model in a module-level variable
+_EMBEDDINGS = None
 
-    st.divider()
-    st.markdown(
-        "<p style='font-size:0.76rem;color:#475569;text-align:center;line-height:1.7;'>"
-        "🔗 LangChain · LangGraph · FAISS<br>"
-        "🤖 Groq LLaMA 3.3 · 70B Versatile<br>"
-        "🗂️ Your Desktop Study Materials"
-        "</p>", unsafe_allow_html=True)
+def get_embeddings() -> HuggingFaceEmbeddings:
+    """Return a cached HuggingFaceEmbeddings instance."""
+    global _EMBEDDINGS
+    if _EMBEDDINGS is None:
+        logger.info("Loading embedding model (first time only)...")
+        try:
+            _EMBEDDINGS = HuggingFaceEmbeddings(
+                model_name="sentence-transformers/all-MiniLM-L6-v2",
+                model_kwargs={"device": "cpu"},
+                encode_kwargs={"normalize_embeddings": True},
+            )
+            logger.info("Embedding model loaded successfully")
+        except Exception as e:
+            logger.error(f"Failed to load embedding model: {e}")
+            raise
+    return _EMBEDDINGS
 
-# ── Main Area ─────────────────────────────────────────────
-st.markdown("""
-<div class='header-banner'>
-  <h1>🧠 ML Guru — RAG Chatbot</h1>
-  <p>Ask anything about Machine Learning, Deep Learning, RAG, LangGraph, and more.<br>
-     Every answer is grounded in <strong>your personal study materials</strong> from your Desktop.</p>
-</div>
-""", unsafe_allow_html=True)
+# Paths on your Desktop that contain ML/DL content
+ML_CONTENT_PATHS = [
+    r"C:\Users\bivor\OneDrive\Desktop\Gen AI Practice\10.RAG",
+    r"C:\Users\bivor\OneDrive\Desktop\Gen AI Practice\9.RAG_BASED_APPLICATION",
+    r"C:\Users\bivor\OneDrive\Desktop\ML Projects Oct24\Types of ML with Examples",
+    r"C:\Users\bivor\OneDrive\Desktop\Agentic_AI_Using_LangGraph",
+    r"C:\Users\bivor\OneDrive\Desktop\Gen AI Practice\books",
+]
 
-# ── Render One Message ────────────────────────────────────
-def render_message(role: str, content: str, sources: list = None):
-    if role == "user":
-        st.markdown(
-            f"<div class='msg-user'><div class='msg-label'>👤 You</div>"
-            f"<div class='msg-content'>{content}</div></div>",
-            unsafe_allow_html=True)
-    else:
-        sources_html = ""
-        if sources:
-            pills = "".join(f"<span class='source-pill'>{s}</span>" for s in sources)
-            sources_html = f"<div class='sources-row'><span class='source-label'>📎 Sources:</span>{pills}</div>"
-        st.markdown(
-            f"<div class='msg-ai'><div class='msg-label'>🤖 ML Guru</div>"
-            f"<div class='msg-content'>{content}</div>{sources_html}</div>",
-            unsafe_allow_html=True)
+logger.info(f"Configured document paths: {len(ML_CONTENT_PATHS)} directories")
 
-# ── Chat History ──────────────────────────────────────────
-if not st.session_state.messages:
-    st.markdown("""
-    <div style='text-align:center;padding:70px 20px;color:#475569;'>
-      <div style='font-size:3.5rem;margin-bottom:18px;'>🎓</div>
-      <p style='font-size:1.1rem;font-weight:600;color:#64748b;margin-bottom:8px;'>
-        Ready to learn from your own study materials!
-      </p>
-      <p style='font-size:0.88rem;color:#475569;'>
-        Type a question below, or pick a Quick Topic from the sidebar →
-      </p>
-    </div>
-    """, unsafe_allow_html=True)
-else:
-    for msg in st.session_state.messages:
-        render_message(msg["role"], msg["content"], msg.get("sources"))
+# ── 2. LLM ────────────────────────────────────────────────
+def get_llm() -> ChatGroq:
+    """Initialize Groq LLM."""
+    logger.debug("Initializing Groq LLM...")
+    return ChatGroq(
+        api_key=GROQ_API_KEY,
+        model="llama-3.3-70b-versatile",
+        temperature=0.3,
+        max_tokens=1024,
+    )
 
+# ── 3. Document Loading ───────────────────────────────────
+def load_documents(paths: List[str]) -> list:
+    """Load .txt, .md, and .pdf files from provided paths."""
+    logger.info("Starting document loading process")
+    all_docs = []
+    start_time = datetime.now()
+    
+    for raw_path in paths:
+        p = Path(raw_path)
+        if not p.exists():
+            logger.warning(f"Path not found, skipping: {p}")
+            continue
+        
+        logger.info(f"Loading documents from: {p.name}")
+        
+        # Load text and markdown files
+        for glob_pattern, loader_cls in [
+            ("**/*.txt", TextLoader),
+            ("**/*.md",  TextLoader),
+        ]:
+            try:
+                loader = DirectoryLoader(
+                    str(p),
+                    glob=glob_pattern,
+                    loader_cls=loader_cls,
+                    loader_kwargs={"encoding": "utf-8", "autodetect_encoding": True},
+                    silent_errors=True,
+                    show_progress=False,
+                    exclude=["**/.venv/**", "**/venv/**", "**/__pycache__/**",
+                             "**/.git/**", "**/*.py", "**/*.ipynb"],
+                )
+                docs = loader.load()
+                if docs:
+                    logger.info(f"  Loaded {len(docs)} {glob_pattern} files from {p.name}")
+                all_docs.extend(docs)
+            except Exception as e:
+                logger.error(f"  Error loading {glob_pattern} from {p.name}: {e}")
 
-# ── Input: Chat Box or Sidebar Quick Topic ────────────────
-pending = st.session_state.pop("quick_input", "")
-user_input = st.chat_input("Ask about ML, Deep Learning, RAG, LangGraph…") or pending
+        # Load PDF files
+        pdf_count = 0
+        for pdf_file in p.rglob("*.pdf"):
+            if any(skip in str(pdf_file) for skip in [".venv", "venv", "__pycache__"]):
+                continue
+            try:
+                loader = PyPDFLoader(str(pdf_file))
+                docs = loader.load()
+                logger.debug(f"  Loaded PDF: {pdf_file.name} ({len(docs)} pages)")
+                all_docs.extend(docs)
+                pdf_count += 1
+            except Exception as e:
+                logger.error(f"  Error loading PDF {pdf_file.name}: {e}")
+        
+        if pdf_count > 0:
+            logger.info(f"  Loaded {pdf_count} PDF files from {p.name}")
 
-if user_input and user_input.strip():
-    question = user_input.strip()
+    elapsed = (datetime.now() - start_time).total_seconds()
+    logger.info(f"Document loading complete: {len(all_docs)} documents loaded in {elapsed:.2f}s")
+    return all_docs
 
-    st.session_state.messages.append({"role": "user", "content": question})
-    render_message("user", question)
+# ── 4. FAISS Index ────────────────────────────────────────
+def build_vector_store(force_rebuild: bool = False) -> FAISS:
+    """Build FAISS index once and persist to disk. Reload on subsequent runs."""
+    index_path = Path(FAISS_INDEX_PATH)
+    embeddings = get_embeddings()
 
-    placeholder = st.empty()
-    placeholder.markdown(
-        "<div class='thinking'>"
-        "<div class='thinking-dots'><span></span><span></span><span></span></div>"
-        "<div class='thinking-text'>Searching your study materials…</div>"
-        "</div>", unsafe_allow_html=True)
+    # Fast path: load existing index from disk
+    if index_path.exists() and not force_rebuild:
+        logger.info("Loading existing FAISS index from disk...")
+        try:
+            vs = FAISS.load_local(
+                FAISS_INDEX_PATH,
+                embeddings,
+                allow_dangerous_deserialization=True,
+            )
+            logger.info("FAISS index loaded successfully (fast path)")
+            return vs
+        except Exception as e:
+            logger.error(f"Failed to load FAISS index: {e}")
+            logger.info("Will rebuild index instead...")
 
-    try:
-        result  = st.session_state.chatbot.chat(question=question, thread_id=st.session_state.thread_id)
-        answer  = result["answer"]
-        sources = result["sources"]
-    except Exception as e:
-        answer  = f"⚠️ Error: {str(e)}\n\nCheck that GROQ_API_KEY is set in your .env file."
-        sources = []
+    # Slow path: build from scratch
+    logger.info("Building FAISS index from scratch...")
+    start_time = datetime.now()
+    
+    docs = load_documents(ML_CONTENT_PATHS)
 
-    placeholder.empty()
+    if not docs:
+        logger.error("No documents loaded. Check ML_CONTENT_PATHS configuration.")
+        raise ValueError(
+            "No documents loaded. Check that ML_CONTENT_PATHS exist in rag_backend.py."
+        )
 
-    st.session_state.messages.append({"role": "assistant", "content": answer, "sources": sources})
-    st.session_state.total_questions += 1
-    st.session_state.sources_seen.update(sources)
+    logger.info(f"Splitting {len(docs)} documents into chunks...")
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=800,
+        chunk_overlap=150,
+        separators=["\n\n", "\n", ".", " ", ""],
+    )
+    chunks = splitter.split_documents(docs)
+    logger.info(f"Created {len(chunks)} chunks from {len(docs)} documents")
 
-    render_message("assistant", answer, sources)
-    st.rerun()
+    logger.info("Generating embeddings and building FAISS index...")
+    vs = FAISS.from_documents(chunks, embeddings)
+    
+    logger.info(f"Saving FAISS index to {FAISS_INDEX_PATH}...")
+    vs.save_local(FAISS_INDEX_PATH)
+    
+    elapsed = (datetime.now() - start_time).total_seconds()
+    logger.info(f"FAISS index built and saved successfully in {elapsed:.2f}s")
+    return vs
+
+# ── 5. Retriever ──────────────────────────────────────────
+def get_retriever(vector_store: FAISS, k: int = 5):
+    """Create MMR retriever for diverse results."""
+    logger.info(f"Initializing retriever with k={k}, MMR search")
+    return vector_store.as_retriever(
+        search_type="mmr",
+        search_kwargs={"k": k, "fetch_k": 20, "lambda_mult": 0.7},
+    )
+
+# ── 6. Prompt ─────────────────────────────────────────────
+RAG_SYSTEM_PROMPT = """You are an expert ML & Deep Learning tutor named **ML Guru**.
+Answer questions using ONLY the provided context from the user's personal study materials.
+
+Guidelines:
+- Be clear, structured, and educational.
+- Use bullet points and examples when helpful.
+- If the context is insufficient, say: "I don't have enough info in your study materials on this."
+- Never hallucinate. Stick strictly to the provided context.
+
+Context from your study materials:
+{context}
+"""
+
+rag_prompt = ChatPromptTemplate.from_messages([
+    ("system", RAG_SYSTEM_PROMPT),
+    MessagesPlaceholder(variable_name="chat_history"),
+    ("human", "{question}"),
+])
+
+logger.info("RAG prompt template configured")
+
+# ── 7. LangGraph State ────────────────────────────────────
+class RAGState(TypedDict):
+    messages:  Annotated[list[BaseMessage], add_messages]
+    question:  str
+    context:   str
+    answer:    str
+    sources:   List[str]
+
+# ── 8. LangGraph Graph ────────────────────────────────────
+def build_rag_graph(retriever):
+    """Build LangGraph workflow for RAG."""
+    logger.info("Building LangGraph workflow...")
+    llm = get_llm()
+
+    def retrieve_node(state: RAGState) -> RAGState:
+        logger.info(f"Retrieving context for question: {state['question'][:50]}...")
+        docs = retriever.invoke(state["question"])
+        logger.info(f"Retrieved {len(docs)} relevant documents")
+        
+        parts, sources = [], []
+        for i, doc in enumerate(docs, 1):
+            src = doc.metadata.get("source", "Unknown")
+            src_short = Path(src).name if src != "Unknown" else "Unknown"
+            parts.append(f"[{i}] ({src_short})\n{doc.page_content}")
+            if src_short not in sources:
+                sources.append(src_short)
+        
+        logger.info(f"Sources identified: {', '.join(sources)}")
+        return {**state, "context": "\n\n---\n\n".join(parts), "sources": sources}
+
+    def generate_node(state: RAGState) -> RAGState:
+        logger.info("Generating answer using LLM...")
+        chain = rag_prompt | llm | StrOutputParser()
+        
+        try:
+            answer = chain.invoke({
+                "question":     state["question"],
+                "context":      state["context"],
+                "chat_history": state["messages"][:-1],
+            })
+            logger.info(f"Answer generated (length: {len(answer)} chars)")
+            logger.debug(f"Answer preview: {answer[:100]}...")
+        except Exception as e:
+            logger.error(f"Error generating answer: {e}")
+            answer = f"I encountered an error while generating the answer: {str(e)}"
+        
+        return {**state, "answer": answer, "messages": [AIMessage(content=answer)]}
+
+    graph = StateGraph(RAGState)
+    graph.add_node("retrieve", retrieve_node)
+    graph.add_node("generate", generate_node)
+    graph.add_edge(START,      "retrieve")
+    graph.add_edge("retrieve", "generate")
+    graph.add_edge("generate", END)
+    
+    logger.info("LangGraph workflow built successfully")
+    return graph.compile(checkpointer=InMemorySaver())
+
+# ── 9. Public Chatbot Class ───────────────────────────────
+class MLRagChatbot:
+    def __init__(self, force_rebuild: bool = False):
+        logger.info("=" * 60)
+        logger.info("Initializing ML RAG Chatbot instance")
+        logger.info(f"Force rebuild: {force_rebuild}")
+        
+        try:
+            self.vector_store = build_vector_store(force_rebuild=force_rebuild)
+            self.retriever = get_retriever(self.vector_store)
+            self.graph = build_rag_graph(self.retriever)
+            self._thread_counter = 0
+            logger.info("ML RAG Chatbot initialized successfully")
+            logger.info("=" * 60)
+        except Exception as e:
+            logger.error(f"Failed to initialize chatbot: {e}")
+            raise
+
+    def new_thread_id(self) -> str:
+        self._thread_counter += 1
+        thread_id = f"session-{self._thread_counter}"
+        logger.info(f"Created new thread: {thread_id}")
+        return thread_id
+
+    def chat(self, question: str, thread_id: str) -> dict:
+        logger.info(f"Processing question [Thread: {thread_id}]: {question[:100]}...")
+        start_time = datetime.now()
+        
+        config = {"configurable": {"thread_id": thread_id}}
+        
+        try:
+            result = self.graph.invoke(
+                {
+                    "messages": [HumanMessage(content=question)],
+                    "question": question,
+                    "context":  "",
+                    "answer":   "",
+                    "sources":  [],
+                },
+                config=config,
+            )
+            
+            elapsed = (datetime.now() - start_time).total_seconds()
+            logger.info(f"Question answered in {elapsed:.2f}s using {len(result['sources'])} sources")
+            
+            return {"answer": result["answer"], "sources": result["sources"]}
+        except Exception as e:
+            logger.error(f"Error processing question: {e}", exc_info=True)
+            return {
+                "answer": f"Error: {str(e)}",
+                "sources": []
+            }
